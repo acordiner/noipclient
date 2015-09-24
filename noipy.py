@@ -1,21 +1,31 @@
-import ConfigParser
+#!/usr/bin/env python
+
 import argparse
+import ConfigParser
 import base64
-from contextlib import closing
 from getpass import getpass
 import logging
-import os
 import urllib
 import urllib2
-import re
 import socket
-import sys
 import time
 import signal
-import unittest
+import sys
+import os
+import re
+
+import daemonocle
 
 CONNECT_TIMEOUT = 5
 DEFAULT_INTERVAL = 30
+DEFAULT_PIDFILE = '/tmp/noipy.pid'
+DEFAULT_CONFIG_FILES = (
+    os.path.expanduser("~/.noipy.cfg"),
+    '/etc/noip.cfg',
+)
+SCRIPT_DIR = os.path.dirname(__file__)
+VERBOSE_LOG_FORMATTER = logging.Formatter("pid=%(process) 6d %(asctime)s %(funcName)s:%(lineno)d %(levelname)s - %(message)s")
+BRIEF_LOG_FORMATTER = logging.Formatter("%(message)s")
 
 
 class NoipApiException(Exception):
@@ -114,39 +124,62 @@ class InterruptableTimer(object):
 
 class Config(object):
 
-    def __init__(self, filename):
-        self.filename = filename
-        self.username = self.password = self.hostnames = self.interval = None
+    def __init__(self, filenames):
+        self.filenames = filenames
+        self.username = self.password = self.hostnames = self.interval = self.pidfile = None
 
-    def load(self):
+    @staticmethod
+    def prompt_yes_no(question):
+        resp = None
+        while resp != 'y':
+            resp = raw_input("%s [Yn] " % question).lower() or "y"
+            if resp == 'n':
+                return False
+        return True
+
+    @classmethod
+    def from_file(cls, filenames):
         config_parser = ConfigParser.SafeConfigParser()
-        config_parser.read([self.filename])
+        if not any(os.path.exists(filename) for filename in filenames):
+            if not cls.prompt_yes_no("Config file not found. Create one now?"):
+                return None
+            elif not cls.create(DEFAULT_CONFIG_FILES[0]):
+                return None
+
+        loaded_filenames = config_parser.read(filenames)
+        if not loaded_filenames:
+            print "Config file could not be loaded: %s" % ', '.join(filenames)
+            return None
+        config = cls(filenames)
         try:
             config_items = dict(config_parser.items("noip"))
         except ConfigParser.NoSectionError:
             raise ValueError("Config file is missing a [noip] section")
         try:
-            self.username = config_items.pop('username')
-            self.password = config_items.pop('password')
-            self.hostnames = config_items.pop('hostnames').split()
+            config.username = config_items.pop('username')
+            config.password = config_items.pop('password')
+            config.hostnames = config_items.pop('hostnames').split()
         except KeyError as ex:
-            raise ValueError("Config file is missing '%s'" % ex.args)
-        for hostname in self.hostnames:
+            raise ValueError("Config file is missing '%s'" % (ex.args[0],))
+        for hostname in config.hostnames:
             if not is_valid_hostname(hostname):
                 raise ValueError("Invalid hostname: %r" % hostname)
         try:
-            self.interval = int(config_items.pop('interval', DEFAULT_INTERVAL))
+            config.interval = int(config_items.pop('interval', DEFAULT_INTERVAL))
         except ValueError:
             raise ValueError("Invalid interval value: %r" % config_items['interval'])
+        config.pidfile = config_items.pop('pidfile', DEFAULT_PIDFILE)
         if config_items:
-            raise ValueError("Config file contains unknown item '%s'" % config_items.keys()[0])
+            raise ValueError("Config file contains unknown item '%s'" % (config_items.keys()[0],))
+        return config
 
-    def create(self):
+    @staticmethod
+    def create(filename):
 
-        if os.path.isfile(self.filename):
+        if os.path.isfile(filename):
             resp = None
             while resp != 'y':
-                resp = raw_input("Warning: %s already exists. Overwrite? [Yn] " % self.filename).lower() or "y"
+                resp = raw_input("Warning: %s already exists. Overwrite? [Yn] " % filename).lower() or "y"
                 if resp == 'n':
                     return False
 
@@ -166,102 +199,101 @@ class Config(object):
         config.set('noip', 'password', password)
         config.set('noip', 'username', username)
 
-        if os.path.isfile(self.filename):
-            os.remove(self.filename)
-        with closing(os.open(self.filename, os.O_CREAT | os.O_TRUNC | os.O_RDWR, 0o600)) as fd:
-            with os.fdopen(fd, 'w') as fileobj:
-                config.write(fileobj)
+        with open(filename, 'w') as fp:
+            config.write(fp)
         return True
+
+    def __str__(self):
+        return "Config(username=%r, hostnames=%r, interval=%r)" % (
+            self.username, self.hostnames, self.interval
+        )
 
 
 class NoIpy(object):
 
-    def __init__(self, config):
+    def __init__(self, config, logger):
+        self.logger = logger
         self.config = config
         self.timer = None
         self.exit_status = 0
         self._last_ipaddress = None
+        self.logger.debug("Using config: %s", config)
 
     def timer_callback(self):
         ipaddress = get_public_ip()
         if ipaddress == self._last_ipaddress:
-            logging.info("No change of public IP address %s" % ipaddress)
+            self.logger.info("No change of public IP address %s" % ipaddress)
         else:
-            logging.info("Updating public IP %s" % ipaddress)
-            try:
-                dynamic_update(self.config.username, self.config.password, self.config.hostnames, ipaddress)
-            except (urllib2.HTTPError, NoipApiException) as ex:
-                self.fail(ex.message or str(ex))
+            self.logger.info("Updating public IP %s" % ipaddress)
+            # try:
+            #     dynamic_update(self.config.username, self.config.password, self.config.hostnames, ipaddress)
+            # except (urllib2.HTTPError, NoipApiException) as ex:
+            #     self.fail(ex.message or str(ex))
             self._last_ipaddress = ipaddress
 
-    def start(self):
-        try:
-            self.config.load()
-        except ValueError as ex:
-            self.fail(str(ex))
-        else:
-            self.timer = InterruptableTimer(self.config.interval, self.timer_callback)
-            self.timer.start()
-        return self.exit_status
-
-    def stop(self):
+    def terminate(self):
         if self.timer is not None:
             self.timer.stop()
 
     def fail(self, msg, exit_status=1):
-        logging.error(msg)
+        self.logger.error(msg)
         self.exit_status = exit_status
-        self.stop()
-
-    def reload(self):
-        self.stop()
-        self.start()
+        self.terminate()
 
     def signal_handler(self, signum, frame):
-        if signum == signal.SIGHUP:
-            self.reload()
-        elif signum == signal.SIGINT:
-            self.stop()
+        if signum == signal.SIGINT or signum == signal.SIGTERM:
+            self.terminate()
         else:
             raise ValueError("Unhandled exception %d" % signum)
 
+    def run(self):
+        self.logger.debug("Running noipy client")
+        self.timer = InterruptableTimer(self.config.interval, self.timer_callback)
+        self.timer.start()
+        return self.exit_status
 
-class NoipyTestCase(unittest.TestCase):
-
-    def test_load_bad_config(self):
-        noipy = NoIpy()
+    def stop(self, message, code):
+        logging.info('self.stopping = %r, self.running = %r, message = %r, code = %r', self.stopping, self.running, message, code)
 
 
 def main(argv=sys.argv):
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', help='config file (optional)',
-                        metavar='filename', dest='config_file', default=os.path.expanduser("~/.noipy.cfg"))
-    parser.add_argument('-C', '--create-config', help='create a new config file',
-                        action='store_true')
+    parser.add_argument('-c', '--config', help='config file (optional)', metavar='filename', dest='config_files',
+                        action='append', default=DEFAULT_CONFIG_FILES)
+    subparsers = parser.add_subparsers(dest='action')
+    subparser_start = subparsers.add_parser('start')
+    subparser_start.add_argument('--no-daemon', action='store_true')
+    subparsers.add_parser('stop')
+    subparsers.add_parser('status')
     args = parser.parse_args(argv[1:])
 
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(funcName)s:%(lineno)d %(levelname)s - %(message)s")
+    handler_stderr = logging.StreamHandler()
+    handler_stderr.setLevel(logging.INFO)
+    handler_stderr.setFormatter(BRIEF_LOG_FORMATTER)
 
-    logging.debug("Using config file: %s", args.config_file)
+    logger = logging.getLogger('noipy')
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler_stderr)
+    logger.debug("args: %s", args)
 
-    config = Config(args.config_file)
-    if args.create_config:
-        if config.create():
-            print "Created config file %s" % args.config_file
-            return 0
-        else:
-            return 1
+    config = Config.from_file(args.config_files)
+
+    handler_file = logging.FileHandler('output.log')  # TODO: log path should be configurable
+    handler_file.setLevel(logging.DEBUG)
+    handler_file.setFormatter(VERBOSE_LOG_FORMATTER)
+    logger.addHandler(handler_file)
+
+    app = NoIpy(config, logger)
+    if args.action == 'start' and args.no_daemon:
+        app.run()
     else:
-        noipy = NoIpy(config)
-        signal.signal(signal.SIGHUP, lambda *_: noipy.reload())
-        signal.signal(signal.SIGINT, lambda *_: noipy.stop())
-        try:
-            exit(noipy.start())
-        except Exception as ex:
-            logging.exception(ex.message or str(ex) or "Unknown %s" % type(ex).__name__)
-            exit(1)
-
+        daemon = daemonocle.Daemon(
+            worker=app.run,
+            shutdown_callback=app.stop,
+            pidfile=os.path.join(SCRIPT_DIR, 'daemonocle_example.pid'),
+        )
+        daemon.do_action(args.action)
 
 if __name__ == '__main__':
-    exit(main())
+    main(sys.argv)
