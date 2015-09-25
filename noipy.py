@@ -5,24 +5,22 @@ import ConfigParser
 import base64
 from getpass import getpass
 import logging
-import urllib
-import urllib2
-import socket
-import time
-import signal
-import sys
 import os
 import re
+from sched import scheduler
+import socket
+import sys
+import time
+import urllib
+import urllib2
 
 import daemonocle
 
 CONNECT_TIMEOUT = 5
 DEFAULT_INTERVAL = 30
-DEFAULT_PIDFILE = '/tmp/noipy.pid'
-DEFAULT_CONFIG_FILES = (
-    os.path.expanduser("~/.noipy.cfg"),
-    '/etc/noip.cfg',
-)
+DEFAULT_PID_FILE = os.path.expanduser("~/.noipy.pid")
+DEFAULT_CONFIG_FILE = os.path.expanduser("~/.noipy.cfg")
+DEFAULT_LOG_FILE = os.path.expanduser("~/.noipy.log")
 SCRIPT_DIR = os.path.dirname(__file__)
 VERBOSE_LOG_FORMATTER = logging.Formatter("pid=%(process) 6d %(asctime)s %(funcName)s:%(lineno)d %(levelname)s - %(message)s")
 BRIEF_LOG_FORMATTER = logging.Formatter("%(message)s")
@@ -62,7 +60,7 @@ def get_public_ip():
     resp = urllib2.urlopen('http://ip1.dynupdate.no-ip.com/')
     ip_addr = resp.read()
     if not is_valid_ipv4_address(ip_addr):
-        raise Exception("Invalid IP address %s" % ip_addr)
+        raise ValueError("Invalid IP address %s" % ip_addr)
     return ip_addr
 
 
@@ -100,67 +98,38 @@ def dynamic_update(username, password, hostnames, ipaddress):
         handle_api_response(response)
 
 
-class InterruptableTimer(object):
-
-    def __init__(self, interval, callback):
-        self.interval = interval
-        self.callback = callback
-        self._next_callback_time = 0
-        self._is_started = False
-
-    def start(self):
-        self._is_started = True
-        while self._is_started:
-            now = time.time()
-            if now >= self._next_callback_time:
-                self.callback()
-                self._next_callback_time = now + (self.interval * 60)
-            time.sleep(1)
-
-    def stop(self):
-        self._next_callback_time = 0
-        self._is_started = False
+def prompt_yes_no(question):
+    resp = None
+    while resp != 'y':
+        resp = raw_input("%s [Yn] " % question).lower() or "y"
+        if resp == 'n':
+            return False
+    return True
 
 
 class Config(object):
 
-    def __init__(self, filenames):
-        self.filenames = filenames
-        self.username = self.password = self.hostnames = self.interval = self.pidfile = None
-
-    @staticmethod
-    def prompt_yes_no(question):
-        resp = None
-        while resp != 'y':
-            resp = raw_input("%s [Yn] " % question).lower() or "y"
-            if resp == 'n':
-                return False
-        return True
+    def __init__(self):
+        self.username = self.password = self.hostnames = self.interval = self.pid_file = self.log_file = None
 
     @classmethod
-    def from_file(cls, filenames):
+    def from_file(cls, filename):
         config_parser = ConfigParser.SafeConfigParser()
-        if not any(os.path.exists(filename) for filename in filenames):
-            if not cls.prompt_yes_no("Config file not found. Create one now?"):
-                return None
-            elif not cls.create(DEFAULT_CONFIG_FILES[0]):
-                return None
 
-        loaded_filenames = config_parser.read(filenames)
-        if not loaded_filenames:
-            print "Config file could not be loaded: %s" % ', '.join(filenames)
+        if not config_parser.read(filename):
+            print "Config file %s could not be loaded" % filename
             return None
-        config = cls(filenames)
+        config = cls(filename)
         try:
             config_items = dict(config_parser.items("noip"))
         except ConfigParser.NoSectionError:
-            raise ValueError("Config file is missing a [noip] section")
+            raise ValueError("Config file %s is missing a [noip] section" % filename)
         try:
             config.username = config_items.pop('username')
             config.password = config_items.pop('password')
             config.hostnames = config_items.pop('hostnames').split()
         except KeyError as ex:
-            raise ValueError("Config file is missing '%s'" % (ex.args[0],))
+            raise ValueError("Config file %s is missing '%s'" % (filename, ex.args[0]))
         for hostname in config.hostnames:
             if not is_valid_hostname(hostname):
                 raise ValueError("Invalid hostname: %r" % hostname)
@@ -168,9 +137,10 @@ class Config(object):
             config.interval = int(config_items.pop('interval', DEFAULT_INTERVAL))
         except ValueError:
             raise ValueError("Invalid interval value: %r" % config_items['interval'])
-        config.pidfile = config_items.pop('pidfile', DEFAULT_PIDFILE)
+        config.pid_file = config_items.pop('pid_file', DEFAULT_PID_FILE)
+        config.log_file = config_items.pop('log_file', DEFAULT_LOG_FILE)
         if config_items:
-            raise ValueError("Config file contains unknown item '%s'" % (config_items.keys()[0],))
+            raise ValueError("Config file %s contains unknown item '%s'" % (filename, config_items.keys()[0]))
         return config
 
     @staticmethod
@@ -212,55 +182,30 @@ class Config(object):
 class NoIpy(object):
 
     def __init__(self, config, logger):
-        self.logger = logger
         self.config = config
-        self.timer = None
-        self.exit_status = 0
-        self._last_ipaddress = None
-        self.logger.debug("Using config: %s", config)
-
-    def timer_callback(self):
-        ipaddress = get_public_ip()
-        if ipaddress == self._last_ipaddress:
-            self.logger.info("No change of public IP address %s" % ipaddress)
-        else:
-            self.logger.info("Updating public IP %s" % ipaddress)
-            # try:
-            #     dynamic_update(self.config.username, self.config.password, self.config.hostnames, ipaddress)
-            # except (urllib2.HTTPError, NoipApiException) as ex:
-            #     self.fail(ex.message or str(ex))
-            self._last_ipaddress = ipaddress
-
-    def terminate(self):
-        if self.timer is not None:
-            self.timer.stop()
-
-    def fail(self, msg, exit_status=1):
-        self.logger.error(msg)
-        self.exit_status = exit_status
-        self.terminate()
-
-    def signal_handler(self, signum, frame):
-        if signum == signal.SIGINT or signum == signal.SIGTERM:
-            self.terminate()
-        else:
-            raise ValueError("Unhandled exception %d" % signum)
+        self.logger = logger
+        self.scheduler = scheduler(time.time, time.sleep)
 
     def run(self):
-        self.logger.debug("Running noipy client")
-        self.timer = InterruptableTimer(self.config.interval, self.timer_callback)
-        self.timer.start()
-        return self.exit_status
+        self.logger.debug("Started noipy client")
+        self.scheduler.enter(0, 0, self.timer_callback, ())
+        self.scheduler.run()
+
+    def timer_callback(self):
+        self.logger.debug("Callback triggered!")
+        self.scheduler.enter(self.config.interval * 60, 0, self.timer_callback, ())
 
     def stop(self, message, code):
-        logging.info('self.stopping = %r, self.running = %r, message = %r, code = %r', self.stopping, self.running, message, code)
+        logging.debug("Stopped noipy client: %s", message)
+        for event in self.scheduler.queue:
+            self.scheduler.cancel(event)
 
 
 def main(argv=sys.argv):
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', help='config file (optional)', metavar='filename', dest='config_files',
-                        action='append', default=DEFAULT_CONFIG_FILES)
+    parser.add_argument('-c', '--config', help='config file (default: %(default)s)', metavar='filename',
+                        dest='config_file', default=DEFAULT_CONFIG_FILE)
     subparsers = parser.add_subparsers(dest='action')
     subparser_start = subparsers.add_parser('start')
     subparser_start.add_argument('--no-daemon', action='store_true')
@@ -277,9 +222,14 @@ def main(argv=sys.argv):
     logger.addHandler(handler_stderr)
     logger.debug("args: %s", args)
 
-    config = Config.from_file(args.config_files)
+    if args.action == 'start' and not os.path.exists(args.config_file):
+        if not prompt_yes_no("Config file %s not found. Create one now?" % args.config_file):
+            return
+        elif not Config.create(args.config_file):
+            return
+    config = Config.from_file(args.config_file)
 
-    handler_file = logging.FileHandler('output.log')  # TODO: log path should be configurable
+    handler_file = logging.FileHandler(config.log_file)
     handler_file.setLevel(logging.DEBUG)
     handler_file.setFormatter(VERBOSE_LOG_FORMATTER)
     logger.addHandler(handler_file)
