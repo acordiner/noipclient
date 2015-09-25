@@ -4,11 +4,11 @@ import argparse
 import ConfigParser
 import base64
 from getpass import getpass
+from httplib import UNAUTHORIZED
 import logging
 import os
 import re
 from sched import scheduler
-import socket
 import sys
 import time
 import urllib
@@ -24,78 +24,19 @@ DEFAULT_LOG_FILE = os.path.expanduser("~/.noipy.log")
 SCRIPT_DIR = os.path.dirname(__file__)
 VERBOSE_LOG_FORMATTER = logging.Formatter("pid=%(process) 6d %(asctime)s %(funcName)s:%(lineno)d %(levelname)s - %(message)s")
 BRIEF_LOG_FORMATTER = logging.Formatter("%(message)s")
+# error messages from: http://www.noip.com/integrate/response
+NOIPY_ERROR_MESSAGES = {
+    'nohost': 'Hostname supplied does not exist under specified account, client exit and require user to enter new login credentials before performing an additional request.',
+    'badauth': 'Invalid username password combination',
+    'badagent': 'Client disabled. Client should exit and not perform any more updates without user intervention.',
+    '!donator': 'An update request was sent including a feature that is not available to that particular user such as offline options.',
+    'abuse': 'Username is blocked due to abuse. Either for not following our update specifications or disabled due to violation of the No-IP terms of service. Our terms of service can be viewed here. Client should stop sending updates.',
+    '911': 'A fatal error on our side such as a database outage. Retry the update no sooner than 30 minutes.',
+}
 
 
 class NoipApiException(Exception):
     pass
-
-
-def is_valid_ipv4_address(address):
-    # copied from: http://stackoverflow.com/a/4017219/2113516
-    try:
-        socket.inet_pton(socket.AF_INET, address)
-    except AttributeError:  # no inet_pton here, sorry
-        try:
-            socket.inet_aton(address)
-        except socket.error:
-            return False
-        return address.count('.') == 3
-    except socket.error:  # not a valid address
-        return False
-    else:
-        return True
-
-
-def is_valid_hostname(hostname):
-    # copied from: http://stackoverflow.com/a/2532344/393304
-    if len(hostname) > 255:
-        return False
-    if hostname[-1] == ".":
-        hostname = hostname[:-1]  # strip exactly one dot from the right, if present
-    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
-    return all(allowed.match(x) for x in hostname.split("."))
-
-
-def get_public_ip():
-    resp = urllib2.urlopen('http://ip1.dynupdate.no-ip.com/')
-    ip_addr = resp.read()
-    if not is_valid_ipv4_address(ip_addr):
-        raise ValueError("Invalid IP address %s" % ip_addr)
-    return ip_addr
-
-
-def handle_api_response(response):
-
-    words = response.split()
-    if words[0] not in ('good', 'nochg'):
-        # error messages copied from: http://www.noip.com/integrate/response
-        error_message = {
-            'nohost': 'Hostname supplied does not exist under specified account, client exit and require user to enter new login credentials before performing an additional request.',
-            'badauth': 'Invalid username password combination',
-            'badagent': 'Client disabled. Client should exit and not perform any more updates without user intervention.',
-            '!donator': 'An update request was sent including a feature that is not available to that particular user such as offline options.',
-            'abuse': 'Username is blocked due to abuse. Either for not following our update specifications or disabled due to violation of the No-IP terms of service. Our terms of service can be viewed here. Client should stop sending updates.',
-            '911': 'A fatal error on our side such as a database outage. Retry the update no sooner than 30 minutes.',
-        }.get(words[0], 'Unknown response: %s' % response)
-        raise NoipApiException(error_message)
-
-
-def dynamic_update(username, password, hostnames, ipaddress):
-
-    # url as specified here: http://www.noip.com/integrate/request
-    url = 'http://dynupdate.no-ip.com/nic/update?%s' % urllib.urlencode({
-        'hostname': ','.join(hostnames),
-        'myip': ipaddress,
-    })
-    request = urllib2.Request(url)
-    encoded_auth = base64.encodestring('%s:%s' % (username, password)).replace('\n', '')
-    request.add_header("Authorization", "Basic %s" % encoded_auth)
-    request.add_header("User-Agent", "noipy alister@cordiner.net")
-
-    resp = urllib2.urlopen(request)
-    body = resp.read()
-    for response in body.splitlines():
-        handle_api_response(response)
 
 
 def prompt_yes_no(question):
@@ -119,7 +60,7 @@ class Config(object):
         if not config_parser.read(filename):
             print "Config file %s could not be loaded" % filename
             return None
-        config = cls(filename)
+        config = cls()
         try:
             config_items = dict(config_parser.items("noip"))
         except ConfigParser.NoSectionError:
@@ -131,7 +72,7 @@ class Config(object):
         except KeyError as ex:
             raise ValueError("Config file %s is missing '%s'" % (filename, ex.args[0]))
         for hostname in config.hostnames:
-            if not is_valid_hostname(hostname):
+            if not cls.is_valid_hostname(hostname):
                 raise ValueError("Invalid hostname: %r" % hostname)
         try:
             config.interval = int(config_items.pop('interval', DEFAULT_INTERVAL))
@@ -173,6 +114,16 @@ class Config(object):
             config.write(fp)
         return True
 
+    @staticmethod
+    def is_valid_hostname(hostname):
+        # copied from: http://stackoverflow.com/a/2532344/393304
+        if len(hostname) > 255:
+            return False
+        if hostname[-1] == ".":
+            hostname = hostname[:-1]  # strip exactly one dot from the right, if present
+        allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
+        return all(allowed.match(x) for x in hostname.split("."))
+
     def __str__(self):
         return "Config(username=%r, hostnames=%r, interval=%r)" % (
             self.username, self.hostnames, self.interval
@@ -185,6 +136,7 @@ class NoIpy(object):
         self.config = config
         self.logger = logger
         self.scheduler = scheduler(time.time, time.sleep)
+        sys.excepthook = self.handle_exception
 
     def run(self):
         self.logger.debug("Started noipy client")
@@ -192,13 +144,53 @@ class NoIpy(object):
         self.scheduler.run()
 
     def timer_callback(self):
-        self.logger.debug("Callback triggered!")
+        self.logger.debug("Updating IP address")
+
+        ipaddress = self.get_public_ip()
+        self.logger.debug("Public IP address is: %s" % ipaddress)
+        # url as specified here: http://www.noip.com/integrate/request
+        url = 'http://dynupdate.no-ip.com/nic/update?%s' % urllib.urlencode({
+            'hostname': ','.join(self.config.hostnames),
+            'myip': ipaddress,
+        })
+        request = urllib2.Request(url)
+        encoded_auth = base64.encodestring('%s:%s' % (self.config.username, self.config.password)).replace('\n', '')
+        request.add_header("Authorization", "Basic %s" % encoded_auth)
+        request.add_header("User-Agent", "noipy alister@cordiner.net")
+
+        # handle the API response
+        try:
+            resp = urllib2.urlopen(request)
+        except urllib2.HTTPError as ex:
+            if ex.code == UNAUTHORIZED:
+                self.logger.error("Incorrect username/password")
+                exit(1)
+            self.logger.exception("Unable to update IP address")
+        else:
+            body = resp.read()
+            for response in body.splitlines():
+                self.logger.debug("Received response: %s", response)
+                words = response.split()
+                if words[0] not in ('good', 'nochg'):
+                    error_message = NOIPY_ERROR_MESSAGES.get(words[0], 'Unknown response: %s' % response)
+                    raise NoipApiException(error_message)
+
+        # schedule the next update
         self.scheduler.enter(self.config.interval * 60, 0, self.timer_callback, ())
 
     def stop(self, message, code):
-        logging.debug("Stopped noipy client: %s", message)
+        self.logger.debug("Stopped noipy client: %s", message)
         for event in self.scheduler.queue:
             self.scheduler.cancel(event)
+        assert False, "asserted false!"
+
+    @staticmethod
+    def get_public_ip():
+        resp = urllib2.urlopen('http://ip1.dynupdate.no-ip.com/')
+        return resp.read()
+
+    def handle_exception(self, *exc_info):
+        self.logger.error("Shutting down due to exception", exc_info=exc_info)
 
 
 def main(argv=sys.argv):
@@ -241,7 +233,7 @@ def main(argv=sys.argv):
         daemon = daemonocle.Daemon(
             worker=app.run,
             shutdown_callback=app.stop,
-            pidfile=os.path.join(SCRIPT_DIR, 'daemonocle_example.pid'),
+            pidfile=config.pid_file,
         )
         daemon.do_action(args.action)
 
