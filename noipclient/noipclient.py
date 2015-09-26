@@ -17,7 +17,8 @@ import urllib2
 import daemonocle
 
 CONNECT_TIMEOUT = 5
-DEFAULT_INTERVAL = 30
+DEFAULT_MIN_INTERVAL = 30
+DEFAULT_MAX_INTERVAL = 360
 DEFAULT_PID_FILE = os.path.expanduser("~/.noipclient.pid")
 DEFAULT_CONFIG_FILE = os.path.expanduser("~/.noipclient.cfg")
 DEFAULT_LOG_FILE = os.path.expanduser("~/.noipclient.log")
@@ -51,7 +52,7 @@ def prompt_yes_no(question):
 class Config(object):
 
     def __init__(self):
-        self.username = self.password = self.hostnames = self.interval = self.pid_file = self.log_file = None
+        self.username = self.password = self.hostnames = self.min_interval = self.max_interval = self.pid_file = self.log_file = None
 
     @classmethod
     def from_file(cls, filename):
@@ -75,9 +76,13 @@ class Config(object):
             if not cls.is_valid_hostname(hostname):
                 raise ValueError("Invalid hostname: %r" % hostname)
         try:
-            config.interval = int(config_items.pop('interval', DEFAULT_INTERVAL))
+            config.min_interval = int(config_items.pop('min_interval', DEFAULT_MIN_INTERVAL))
         except ValueError:
-            raise ValueError("Invalid interval value: %r" % config_items['interval'])
+            raise ValueError("Invalid min_interval value: %r" % config_items['min_interval'])
+        try:
+            config.max_interval = int(config_items.pop('max_interval', DEFAULT_MAX_INTERVAL))
+        except ValueError:
+            raise ValueError("Invalid max_interval value: %r" % config_items['max_interval'])
         config.pid_file = config_items.pop('pid_file', DEFAULT_PID_FILE)
         config.log_file = config_items.pop('log_file', DEFAULT_LOG_FILE)
         if config_items:
@@ -125,8 +130,8 @@ class Config(object):
         return all(allowed.match(x) for x in hostname.split("."))
 
     def __str__(self):
-        return "Config(username=%r, hostnames=%r, interval=%r)" % (
-            self.username, self.hostnames, self.interval
+        return "Config(username=%r, hostnames=%r, min_interval=%r, max_interval=%r)" % (
+            self.username, self.hostnames, self.min_interval, self.max_interval
         )
 
 
@@ -135,6 +140,7 @@ class NoIpClient(object):
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
+        self.last_ipaddress = self.last_update_time = None
         self.scheduler = scheduler(time.time, time.sleep)
         sys.excepthook = self.handle_exception
 
@@ -144,39 +150,56 @@ class NoIpClient(object):
         self.scheduler.run()
 
     def timer_callback(self):
-        self.logger.debug("Updating IP address")
 
+        # check if the IP address needs to be updated
         ipaddress = self.get_public_ip()
         self.logger.debug("Public IP address is: %s" % ipaddress)
-        # url as specified here: http://www.noip.com/integrate/request
-        url = 'http://dynupdate.no-ip.com/nic/update?%s' % urllib.urlencode({
-            'hostname': ','.join(self.config.hostnames),
-            'myip': ipaddress,
-        })
-        request = urllib2.Request(url)
-        encoded_auth = base64.encodestring('%s:%s' % (self.config.username, self.config.password)).replace('\n', '')
-        request.add_header("Authorization", "Basic %s" % encoded_auth)
-        request.add_header("User-Agent", "noipclient alister@cordiner.net")
-
-        # handle the API response
-        try:
-            resp = urllib2.urlopen(request)
-        except urllib2.HTTPError as ex:
-            if ex.code == UNAUTHORIZED:
-                self.logger.error("Incorrect username/password")
-                exit(1)
-            self.logger.exception("Unable to update IP address")
+        update_required = True
+        now = time.time()
+        if self.last_ipaddress is None:
+            self.logger.debug("Update require since this is the first run")
+        elif ipaddress != self.last_ipaddress:
+            self.logger.debug("Update require since IP address has changed")
+        elif self.last_update_time and now >= self.last_update_time + (self.config.max_interval * 60):
+            self.logger.debug("Update required since at least %d minutes since the last update", self.config.max_interval)
         else:
-            body = resp.read()
-            for response in body.splitlines():
-                self.logger.debug("Received response: %s", response)
-                words = response.split()
-                if words[0] not in ('good', 'nochg'):
-                    error_message = NOIP_ERROR_MESSAGES.get(words[0], 'Unknown response: %s' % response)
-                    raise NoipApiException(error_message)
+            self.logger.debug("Update not required since IP address has not changed")
+            update_required = False
+
+        # update IP address using the noip.com API
+        if update_required:
+            # url as specified here: http://www.noip.com/integrate/request
+            url = 'http://dynupdate.no-ip.com/nic/update?%s' % urllib.urlencode({
+                'hostname': ','.join(self.config.hostnames),
+                'myip': ipaddress,
+            })
+            request = urllib2.Request(url)
+            encoded_auth = base64.encodestring('%s:%s' % (self.config.username, self.config.password)).replace('\n', '')
+            request.add_header("Authorization", "Basic %s" % encoded_auth)
+            request.add_header("User-Agent", "noipclient alister@cordiner.net")
+            try:
+                resp = urllib2.urlopen(request)
+            except urllib2.HTTPError as ex:
+                if ex.code == UNAUTHORIZED:
+                    self.logger.error("Incorrect username/password")
+                    exit(1)
+                self.logger.exception("Unable to update IP address")
+            else:
+                body = resp.read()
+                for response in body.splitlines():
+                    self.logger.debug("Received response: %s", response)
+                    words = response.split()
+                    if words[0] not in ('good', 'nochg'):
+                        error_message = NOIP_ERROR_MESSAGES.get(words[0], 'Unknown response: %s' % response)
+                        raise NoipApiException(error_message)
+                self.last_update_time = now
+                self.last_ipaddress = ipaddress
 
         # schedule the next update
-        self.scheduler.enter(self.config.interval * 60, 0, self.timer_callback, ())
+        next_update_time = now + (self.config.min_interval * 60)
+        if self.last_update_time:
+            next_update_time = min(next_update_time, self.last_update_time + (self.config.max_interval * 60))
+        self.scheduler.enterabs(next_update_time, 0, self.timer_callback, ())
 
     def stop(self, message, code):
         self.logger.debug("Stopped noipclient client: %s", message)
