@@ -9,6 +9,20 @@ noipclient is a noip.com dynamic DNS update client.
 Installation
 ============
 
+Dependencies
+------------
+
+noipclient depends on the Python development package. For example, to install it on Ubuntu:
+
+$ sudo apt-get install python-dev
+
+Or on CentOS:
+
+$ sudo yum install python-devel
+
+Installing from pypi
+--------------------
+
 You can install ``noipclient`` either via the Python Package Index (PyPI)
 or from source.
 
@@ -23,7 +37,7 @@ To install using ``easy_install``,::
 Downloading and installing from source
 --------------------------------------
 
-Download the latest version of ``noipclient`` from
+Alternatively, you can download the latest version of ``noipclient`` from
 http://pypi.python.org/pypi/noipclient/
 
 You can install it by doing the following,::
