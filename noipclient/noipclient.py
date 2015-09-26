@@ -182,7 +182,6 @@ class NoIpClient(object):
         self.logger.debug("Stopped noipclient client: %s", message)
         for event in self.scheduler.queue:
             self.scheduler.cancel(event)
-        assert False, "asserted false!"
 
     @staticmethod
     def get_public_ip():
@@ -202,6 +201,7 @@ def main(argv=sys.argv):
     subparser_start = subparsers.add_parser('start')
     subparser_start.add_argument('--no-daemon', action='store_true')
     subparsers.add_parser('stop')
+    subparsers.add_parser('restart')
     subparsers.add_parser('status')
     args = parser.parse_args(argv[1:])
 

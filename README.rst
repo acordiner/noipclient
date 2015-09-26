@@ -1,20 +1,10 @@
-=====
+==========
 noipclient
-=====
+==========
 
 noipclient is a noip.com dynamic DNS update client.
 
 |pypi| |build| |deps|
-
-Using noipclient
-===========
-
-Coming soon...
-
-Documentation
-=============
-
-Coming soon...
 
 Installation
 ============
@@ -48,6 +38,31 @@ Using the development version
 You can clone the git repository by doing the following::
 
     $ git clone git://github.com/acordiner/noipclient.git
+
+Using noipclient
+================
+
+To start noipclient, run:
+
+    $ noipclient start
+
+The first time you run the client, you will be prompted to enter your noip.com account details:
+
+    Config file /home/fbar/.noipclient.cfg not found. Create one now? [Yn]
+    no-ip.com username: fbar
+    no-ip.com password:
+    no-ip.com hostname (e.g. myhost.no-ip.org): foobar.no-ip.org
+    Starting noipclient ... OK
+
+You can then start, stop, restart and check the status of noipclient:
+
+    $ noipclient status
+    noipclient -- pid: 23842, status: sleeping, uptime: 0m, %cpu: 0.0, %mem: 0.1
+    $ noipclient restart
+    Stopping noipclient ... OK
+    Starting noipclient ... OK
+    $ noipclient stop
+    Stopping noipclient ... OK
 
 Bug tracker
 ===========
