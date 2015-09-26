@@ -25,7 +25,7 @@ SCRIPT_DIR = os.path.dirname(__file__)
 VERBOSE_LOG_FORMATTER = logging.Formatter("pid=%(process) 6d %(asctime)s %(funcName)s:%(lineno)d %(levelname)s - %(message)s")
 BRIEF_LOG_FORMATTER = logging.Formatter("%(message)s")
 # error messages from: http://www.noip.com/integrate/response
-NOIPY_ERROR_MESSAGES = {
+NOIP_ERROR_MESSAGES = {
     'nohost': 'Hostname supplied does not exist under specified account, client exit and require user to enter new login credentials before performing an additional request.',
     'badauth': 'Invalid username password combination',
     'badagent': 'Client disabled. Client should exit and not perform any more updates without user intervention.',
@@ -130,7 +130,7 @@ class Config(object):
         )
 
 
-class NoIpy(object):
+class NoIpClient(object):
 
     def __init__(self, config, logger):
         self.config = config
@@ -172,7 +172,7 @@ class NoIpy(object):
                 self.logger.debug("Received response: %s", response)
                 words = response.split()
                 if words[0] not in ('good', 'nochg'):
-                    error_message = NOIPY_ERROR_MESSAGES.get(words[0], 'Unknown response: %s' % response)
+                    error_message = NOIP_ERROR_MESSAGES.get(words[0], 'Unknown response: %s' % response)
                     raise NoipApiException(error_message)
 
         # schedule the next update
@@ -226,7 +226,7 @@ def main(argv=sys.argv):
     handler_file.setFormatter(VERBOSE_LOG_FORMATTER)
     logger.addHandler(handler_file)
 
-    app = NoIpy(config, logger)
+    app = NoIpClient(config, logger)
     if args.action == 'start' and args.no_daemon:
         app.run()
     else:
