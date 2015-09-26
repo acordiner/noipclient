@@ -18,9 +18,9 @@ import daemonocle
 
 CONNECT_TIMEOUT = 5
 DEFAULT_INTERVAL = 30
-DEFAULT_PID_FILE = os.path.expanduser("~/.noipy.pid")
-DEFAULT_CONFIG_FILE = os.path.expanduser("~/.noipy.cfg")
-DEFAULT_LOG_FILE = os.path.expanduser("~/.noipy.log")
+DEFAULT_PID_FILE = os.path.expanduser("~/.noipclient.pid")
+DEFAULT_CONFIG_FILE = os.path.expanduser("~/.noipclient.cfg")
+DEFAULT_LOG_FILE = os.path.expanduser("~/.noipclient.log")
 SCRIPT_DIR = os.path.dirname(__file__)
 VERBOSE_LOG_FORMATTER = logging.Formatter("pid=%(process) 6d %(asctime)s %(funcName)s:%(lineno)d %(levelname)s - %(message)s")
 BRIEF_LOG_FORMATTER = logging.Formatter("%(message)s")
@@ -139,7 +139,7 @@ class NoIpy(object):
         sys.excepthook = self.handle_exception
 
     def run(self):
-        self.logger.debug("Started noipy client")
+        self.logger.debug("Started noipclient client")
         self.scheduler.enter(0, 0, self.timer_callback, ())
         self.scheduler.run()
 
@@ -156,7 +156,7 @@ class NoIpy(object):
         request = urllib2.Request(url)
         encoded_auth = base64.encodestring('%s:%s' % (self.config.username, self.config.password)).replace('\n', '')
         request.add_header("Authorization", "Basic %s" % encoded_auth)
-        request.add_header("User-Agent", "noipy alister@cordiner.net")
+        request.add_header("User-Agent", "noipclient alister@cordiner.net")
 
         # handle the API response
         try:
@@ -179,7 +179,7 @@ class NoIpy(object):
         self.scheduler.enter(self.config.interval * 60, 0, self.timer_callback, ())
 
     def stop(self, message, code):
-        self.logger.debug("Stopped noipy client: %s", message)
+        self.logger.debug("Stopped noipclient client: %s", message)
         for event in self.scheduler.queue:
             self.scheduler.cancel(event)
         assert False, "asserted false!"
@@ -209,7 +209,7 @@ def main(argv=sys.argv):
     handler_stderr.setLevel(logging.INFO)
     handler_stderr.setFormatter(BRIEF_LOG_FORMATTER)
 
-    logger = logging.getLogger('noipy')
+    logger = logging.getLogger('noipclient')
     logger.setLevel(logging.DEBUG)
     logger.addHandler(handler_stderr)
     logger.debug("args: %s", args)

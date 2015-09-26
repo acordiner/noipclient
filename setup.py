@@ -4,10 +4,10 @@ import os
 PROJECT_DIR = os.path.dirname(__file__)
 
 setup(
-    name='noipy',
+    name='noipclient',
     version='0.0.1',
     packages=find_packages(),
-    url='http://github.com/acordiner/noipy',
+    url='http://github.com/acordiner/noipclient',
     license='GPL v2',
     author='Alister Cordiner',
     author_email='alister@cordiner.net',
@@ -18,7 +18,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'noipy = noipy.noipy:main',
+            'noipclient = noipclient.noipclient:main',
         ],
     },
     classifiers=[
