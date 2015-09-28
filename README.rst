@@ -12,13 +12,13 @@ Installation
 Dependencies
 ------------
 
-noipclient depends on the Python development package. For example, to install it on Ubuntu:
+noipclient depends on the Python development package. For example, to install it on Ubuntu::
 
-$ sudo apt-get install python-dev
+    $ sudo apt-get install python-dev
 
-Or on CentOS:
+Or on CentOS::
 
-$ sudo yum install python-devel
+    $ sudo yum install python-devel
 
 Installing from pypi
 --------------------
@@ -56,11 +56,11 @@ You can clone the git repository by doing the following::
 Using noipclient
 ================
 
-To start noipclient, run:
+To start noipclient, run::
 
     $ noipclient start
 
-The first time you run the client, you will be prompted to enter your noip.com account details:
+The first time you run the client, you will be prompted to enter your noip.com account details::
 
     Config file /home/fbar/.noipclient.cfg not found. Create one now? [Yn]
     no-ip.com username: fbar
@@ -68,7 +68,7 @@ The first time you run the client, you will be prompted to enter your noip.com a
     no-ip.com hostname (e.g. myhost.no-ip.org): foobar.no-ip.org
     Starting noipclient ... OK
 
-You can then start, stop, restart and check the status of noipclient:
+You can then start, stop, restart and check the status of noipclient::
 
     $ noipclient status
     noipclient -- pid: 23842, status: sleeping, uptime: 0m, %cpu: 0.0, %mem: 0.1
