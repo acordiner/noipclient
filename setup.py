@@ -5,7 +5,7 @@ PROJECT_DIR = os.path.dirname(__file__)
 
 setup(
     name='noipclient',
-    version='0.0.6',
+    version='0.0.7',
     packages=find_packages(),
     url='http://github.com/acordiner/noipclient',
     license='GPL v2',
@@ -14,7 +14,7 @@ setup(
     description='noip.com Dynamic DNS update client.',
     long_description=open(os.path.join(PROJECT_DIR, 'README.rst')).read(),
     install_requires=[
-        'daemonocle==0.8',
+        'daemonocle==1.0.1',
     ],
     entry_points={
         'console_scripts': [

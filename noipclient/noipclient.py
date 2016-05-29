@@ -157,9 +157,9 @@ class NoIpClient(object):
         update_required = True
         now = time.time()
         if self.last_ipaddress is None:
-            self.logger.debug("Update require since this is the first run")
+            self.logger.debug("Update required since this is the first run")
         elif ipaddress != self.last_ipaddress:
-            self.logger.debug("Update require since IP address has changed")
+            self.logger.debug("Update required since IP address has changed")
         elif self.last_update_time and now >= self.last_update_time + (self.config.max_interval * 60):
             self.logger.debug("Update required since at least %d minutes since the last update", self.config.max_interval)
         else:

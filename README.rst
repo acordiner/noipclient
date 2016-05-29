@@ -44,7 +44,7 @@ You can install it by doing the following,::
 
     $ tar xvfz noipclient-0.0.0.tar.gz
     $ cd noipclient-0.0.0
-    # python setup.py install # as root
+    $ sudo python setup.py install
 
 Using the development version
 -----------------------------
@@ -100,5 +100,5 @@ file in the top distribution directory for the full license text.
     :alt: Build status of the master branch
 
 .. |deps| image:: https://img.shields.io/requires/github/acordiner/noipclient/master.svg?style=flat-square&label=dependencies
-    :target: https://requires.io/github/acordiner/csvquerytool/requirements/?branch=master
+    :target: https://requires.io/github/acordiner/noipclient/requirements/?branch=master
     :alt: Status of dependencies
